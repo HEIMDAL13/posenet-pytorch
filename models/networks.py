@@ -71,6 +71,9 @@ class RegressionHead(nn.Module):
             self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
                                                nn.ReLU(inplace=True),
                                                nn.Dropout(0.7)])
+
+
+
             self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(1024, 3))
             self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(1024, 4))
         else:
@@ -88,6 +91,85 @@ class RegressionHead(nn.Module):
         output_wpqr = self.cls_fc_wpqr(output)
         output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
         return [output_xy, output_wpqr]
+
+
+
+
+class RegressionHeadLSTM(nn.Module):
+    def __init__(self, lossID, weights=None,hidden_size=32):
+        super(RegressionHeadLSTM, self).__init__()
+        if lossID != "loss3":
+            nc = {"loss1": 512, "loss2": 528}
+            self.projection = nn.Sequential(*[nn.AvgPool2d(kernel_size=5, stride=3),
+                                              weight_init_googlenet(lossID+"/conv", nn.Conv2d(nc[lossID], 128, kernel_size=1), weights),
+                                              nn.ReLU(inplace=True)])
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
+                                               nn.ReLU(inplace=True)])
+            #,nn.Dropout(0.7)
+
+            #self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(128, 3))
+            #self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(128, 4))
+            #self.lstm_pose_lr = nn.LSTM(input_size=32, hidden_size=32, bidirectional=True, dropout=0.7)
+            #self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=32, bidirectional=True, dropout=0.7)
+
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(hidden_size*4, 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(hidden_size*4, 4))
+            self.lstm_pose_lr = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True)
+            self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True)
+
+            self.dropout_lstm = nn.Dropout(p=0.7)
+
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][0])
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][1])
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][0])
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][1])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][0])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][1])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][0])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][1])
+
+        else:
+            self.projection = nn.AvgPool2d(kernel_size=7, stride=1)
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet("pose", nn.Linear(1024, 2048)),
+                                               nn.ReLU(inplace=True)])
+            #,nn.Dropout(0.5)
+            # self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(128, 3))
+            # self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(128, 4))
+            #
+            # self.lstm_pose_lr = nn.LSTM(input_size=64, hidden_size=32, bidirectional=True)
+            # self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=32, bidirectional=True)
+
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(hidden_size*4, 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(hidden_size*4, 4))
+
+            self.lstm_pose_lr = nn.LSTM(input_size=64, hidden_size=hidden_size, bidirectional=True)
+            self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True)
+
+            self.dropout_lstm = nn.Dropout(p=0.5)
+
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][0])
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][1])
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][0])
+            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][1])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][0])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][1])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][0])
+            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][1])
+
+
+    def forward(self, input):
+        output = self.projection(input)
+        output = self.cls_fc_pose(output.view(output.size(0), -1))
+        input_lstm = output.view(output.size(0),32, -1)
+        outputlr, (hidden_state_lr, cell_state_lr) = self.lstm_pose_lr(input_lstm.permute(1,0,2))
+        outputud, (hidden_state_ud, cell_state_ud) = self.lstm_pose_ud(input_lstm.permute(2,0,1))
+        final_output_lstm = torch.cat((hidden_state_lr[0,:,:], hidden_state_lr[1,:,:], hidden_state_ud[0,:,:],hidden_state_ud[1,:,:]), 1)
+        final_output_lstm = self.dropout_lstm(final_output_lstm)
+        output_xy = self.cls_fc_xy(final_output_lstm)
+        output_wpqr = self.cls_fc_wpqr(final_output_lstm)
+        output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+        return [output_xy, output_wpqr]
+
 
 # define inception block for GoogleNet
 class InceptionBlock(nn.Module):
@@ -159,9 +241,9 @@ class PoseNet(nn.Module):
         self.inception_5a = InceptionBlock("5a", 832, 256, 160, 320, 32, 128, 128, weights, gpu_ids)
         self.inception_5b = InceptionBlock("5b", 832, 384, 192, 384, 48, 128, 128, weights, gpu_ids)
 
-        self.cls1_fc = RegressionHead(lossID="loss1", weights=weights)
-        self.cls2_fc = RegressionHead(lossID="loss2", weights=weights)
-        self.cls3_fc = RegressionHead(lossID="loss3", weights=weights)
+        self.cls1_fc = RegressionHeadLSTM(lossID="loss1", weights=weights,hidden_size=32)
+        self.cls2_fc = RegressionHeadLSTM(lossID="loss2", weights=weights,hidden_size=32)
+        self.cls3_fc = RegressionHeadLSTM(lossID="loss3", weights=weights,hidden_size=32)
 
         self.model = nn.Sequential(*[self.inception_3a, self.inception_3b,
                                    self.inception_4a, self.inception_4b,
