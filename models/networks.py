@@ -241,9 +241,16 @@ class PoseNet(nn.Module):
         self.inception_5a = InceptionBlock("5a", 832, 256, 160, 320, 32, 128, 128, weights, gpu_ids)
         self.inception_5b = InceptionBlock("5b", 832, 384, 192, 384, 48, 128, 128, weights, gpu_ids)
 
-        self.cls1_fc = RegressionHeadLSTM(lossID="loss1", weights=weights,hidden_size=32)
-        self.cls2_fc = RegressionHeadLSTM(lossID="loss2", weights=weights,hidden_size=32)
-        self.cls3_fc = RegressionHeadLSTM(lossID="loss3", weights=weights,hidden_size=32)
+        lstm = False
+
+        if lstm:
+            self.cls1_fc = RegressionHeadLSTM(lossID="loss1", weights=weights,hidden_size=32)
+            self.cls2_fc = RegressionHeadLSTM(lossID="loss2", weights=weights,hidden_size=32)
+            self.cls3_fc = RegressionHeadLSTM(lossID="loss3", weights=weights,hidden_size=32)
+        else:
+            self.cls1_fc = RegressionHead(lossID="loss1", weights=weights)
+            self.cls2_fc = RegressionHead(lossID="loss2", weights=weights)
+            self.cls3_fc = RegressionHead(lossID="loss3", weights=weights)
 
         self.model = nn.Sequential(*[self.inception_3a, self.inception_3b,
                                    self.inception_4a, self.inception_4b,
