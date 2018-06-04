@@ -10,7 +10,7 @@ from .base_model import BaseModel
 from . import networks
 import pickle
 import numpy
-
+import logging
 class PoseNetModel(BaseModel):
     def name(self):
         return 'PoseNetModel'
@@ -65,7 +65,8 @@ class PoseNetModel(BaseModel):
         self.image_paths = input['A_paths']
         self.input_A.resize_(input_A.size()).copy_(input_A)
         self.input_B.resize_(input_B.size()).copy_(input_B)
-
+        self.input_A=self.input_A.double()
+        self.input_B=self.input_B.double()
     def forward(self):
         self.pred_B = self.netG(self.input_A)
 
@@ -107,6 +108,8 @@ class PoseNetModel(BaseModel):
         ori_gt = F.normalize(self.input_B[:, 3:], p=2, dim=1)
         abs_distance = torch.abs((ori_gt.mul(self.pred_B[1])).sum())
         ori_err = 2*180/numpy.pi* torch.acos(abs_distance)
+        #logging.warning(pos_err.item())
+        #logging.warning(ori_err.item())
         return [pos_err.item(), ori_err.item()]
 
     def get_current_pose(self):

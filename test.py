@@ -6,6 +6,9 @@ from models.models import create_model
 from util.visualizer import Visualizer
 from util import html
 import numpy
+import torch
+
+#torch.set_default_tensor_type('torch.DoubleTensor')
 
 opt = TestOptions().parse()
 opt.nThreads = 1   # test code only supports nThreads = 1
@@ -25,7 +28,7 @@ if not os.path.exists(results_dir):
 
 testepochs = ['latest']
 besterror  = [0, float('inf'), float('inf')] # nepoch, medX, medQ
-testepochs = numpy.arange(150, 501, 5)
+testepochs = numpy.arange(150, 601, 5)
 testfile = open(os.path.join(results_dir, 'test_median.txt'), 'a')
 testfile.write('epoch medX  medQ\n')
 testfile.write('==================\n')

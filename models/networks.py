@@ -5,6 +5,7 @@ from torch.nn import functional as F
 import functools
 from torch.autograd import Variable
 from torch.optim import lr_scheduler
+import logging
 import numpy as np
 ###############################################################################
 # Functions
@@ -90,6 +91,9 @@ class RegressionHead(nn.Module):
         output_xy = self.cls_fc_xy(output)
         output_wpqr = self.cls_fc_wpqr(output)
         output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+        #logging.warning('OUTPUT:')
+        #logging.warning(output_xy)
+        #logging.warning(output_wpqr)
         return [output_xy, output_wpqr]
 
 
@@ -105,12 +109,7 @@ class RegressionHeadLSTM(nn.Module):
                                               nn.ReLU(inplace=True)])
             self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
                                                nn.ReLU(inplace=True)])
-            #,nn.Dropout(0.7)
 
-            #self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(128, 3))
-            #self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(128, 4))
-            #self.lstm_pose_lr = nn.LSTM(input_size=32, hidden_size=32, bidirectional=True, dropout=0.7)
-            #self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=32, bidirectional=True, dropout=0.7)
 
             self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(hidden_size*4, 3))
             self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(hidden_size*4, 4))
@@ -118,26 +117,15 @@ class RegressionHeadLSTM(nn.Module):
             self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True)
 
             self.dropout_lstm = nn.Dropout(p=0.7)
-
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][0])
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][1])
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][0])
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][1])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][0])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][1])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][0])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][1])
+            print("call lr")
+            weights_init_kaiming(self.lstm_pose_lr)
+            print("call ud")
+            weights_init_kaiming(self.lstm_pose_ud)
 
         else:
             self.projection = nn.AvgPool2d(kernel_size=7, stride=1)
             self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet("pose", nn.Linear(1024, 2048)),
                                                nn.ReLU(inplace=True)])
-            #,nn.Dropout(0.5)
-            # self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(128, 3))
-            # self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(128, 4))
-            #
-            # self.lstm_pose_lr = nn.LSTM(input_size=64, hidden_size=32, bidirectional=True)
-            # self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=32, bidirectional=True)
 
             self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(hidden_size*4, 3))
             self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(hidden_size*4, 4))
@@ -146,16 +134,10 @@ class RegressionHeadLSTM(nn.Module):
             self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True)
 
             self.dropout_lstm = nn.Dropout(p=0.5)
-
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][0])
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[0][1])
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][0])
-            init.xavier_normal_(self.lstm_pose_lr.all_weights[1][1])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][0])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[0][1])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][0])
-            init.xavier_normal_(self.lstm_pose_ud.all_weights[1][1])
-
+            print("call lr end")
+            weights_init_kaiming(self.lstm_pose_lr)
+            print("call ud end")
+            weights_init_kaiming(self.lstm_pose_ud)
 
     def forward(self, input):
         output = self.projection(input)
@@ -168,6 +150,9 @@ class RegressionHeadLSTM(nn.Module):
         output_xy = self.cls_fc_xy(final_output_lstm)
         output_wpqr = self.cls_fc_wpqr(final_output_lstm)
         output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+        #logging.warning('OUTPUT:')
+        #logging.warning(output_xy)
+        #logging.warning(output_wpqr)
         return [output_xy, output_wpqr]
 
 
@@ -241,7 +226,7 @@ class PoseNet(nn.Module):
         self.inception_5a = InceptionBlock("5a", 832, 256, 160, 320, 32, 128, 128, weights, gpu_ids)
         self.inception_5b = InceptionBlock("5b", 832, 384, 192, 384, 48, 128, 128, weights, gpu_ids)
 
-        lstm = False
+        lstm = True
 
         if lstm:
             self.cls1_fc = RegressionHeadLSTM(lossID="loss1", weights=weights,hidden_size=32)
@@ -274,7 +259,6 @@ class PoseNet(nn.Module):
         output_4e = self.inception_4e(output_4d)
         output_5a = self.inception_5a(output_4e)
         output_5b = self.inception_5b(output_5a)
-
         if not self.isTest:
             return self.cls1_fc(output_4a) + self.cls2_fc(output_4d) +  self.cls3_fc(output_5b)
         return self.cls3_fc(output_5b)
