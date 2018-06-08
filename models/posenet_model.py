@@ -34,7 +34,7 @@ class PoseNetModel(BaseModel):
 
         self.netG = networks.define_G(opt.input_nc, None, None, opt.which_model_netG,
                                       init_from=googlenet_weights, isTest=not self.isTrain,
-                                      gpu_ids = self.gpu_ids)
+                                      gpu_ids = self.gpu_ids, lstm_size=opt.lstm_size)
 
         if not self.isTrain or opt.continue_train:
             self.load_network(self.netG, 'G', opt.which_epoch)
@@ -49,7 +49,7 @@ class PoseNetModel(BaseModel):
             self.optimizers = []
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(),
                                                 lr=opt.lr, eps=1,
-                                                weight_decay=0.0625,
+                                                weight_decay=0.0002,
                                                 betas=(self.opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G)
             # for optimizer in self.optimizers:
@@ -65,8 +65,8 @@ class PoseNetModel(BaseModel):
         self.image_paths = input['A_paths']
         self.input_A.resize_(input_A.size()).copy_(input_A)
         self.input_B.resize_(input_B.size()).copy_(input_B)
-        self.input_A=self.input_A.double()
-        self.input_B=self.input_B.double()
+        #self.input_A=self.input_A.double()
+        #self.input_B=self.input_B.double()
     def forward(self):
         self.pred_B = self.netG(self.input_A)
 

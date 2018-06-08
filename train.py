@@ -25,18 +25,17 @@ model = create_model(opt)
 visualizer = Visualizer(opt)
 total_steps = 0
 
+pytorch_total_params = sum(p.numel() for p in model.netG.parameters())
+print("Total parameters: ",pytorch_total_params)
 for epoch in range(opt.epoch_count, opt.niter + opt.niter_decay + 1):
     epoch_start_time = time.time()
     epoch_iter = 0
-    #logging.warning('BATCH:')
-    #logging.warning(epoch)
 
     for i, data in enumerate(dataset):
         iter_start_time = time.time()
         visualizer.reset()
         total_steps += opt.batchSize
         epoch_iter += opt.batchSize
-        #logging.warning(epoch_iter)
         model.set_input(data)
         model.optimize_parameters()
 

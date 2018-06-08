@@ -25,6 +25,27 @@ def weight_init_googlenet(key, module, weights=None):
         module.weight.data[...] = torch.from_numpy(weights[(key+"_0").encode()])
     return module
 
+def weights_init_kaiming(m):
+    classname = m.__class__.__name__
+    print(classname)
+    if classname.find('Conv') != -1:
+        init.kaiming_normal(m.weight.data, a=0, mode='fan_in')
+    elif classname.find('Linear') != -1:
+        init.kaiming_normal(m.weight.data, a=0, mode='fan_in')
+    elif classname.find('BatchNorm2d') != -1:
+        init.normal_(m.weight.data, 1.0, 0.02)
+        init.constant_(m.bias.data, 0.0)
+    elif classname.find('LSTM') != -1:
+        for name, param in m.named_parameters():
+            if 'bias' in name:
+                print(name)
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                print(name)
+                nn.init.kaiming_normal(param)
+
+
+
 def get_scheduler(optimizer, opt):
     if opt.lr_policy == 'lambda':
         def lambda_rule(epoch):
@@ -41,7 +62,7 @@ def get_scheduler(optimizer, opt):
 
 
 def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropout=False, init_type='normal', gpu_ids=[],
-             init_from=None, isTest=False):
+             init_from=None, isTest=False, lstm_size=0):
     netG = None
     use_gpu = len(gpu_ids) > 0
 
@@ -49,7 +70,7 @@ def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropo
         assert(torch.cuda.is_available())
 
     if which_model_netG == 'posenet':
-        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids)
+        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, lstm_size=lstm_size)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
     if len(gpu_ids) > 0:
@@ -91,9 +112,40 @@ class RegressionHead(nn.Module):
         output_xy = self.cls_fc_xy(output)
         output_wpqr = self.cls_fc_wpqr(output)
         output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
-        #logging.warning('OUTPUT:')
-        #logging.warning(output_xy)
-        #logging.warning(output_wpqr)
+        return [output_xy, output_wpqr]
+
+class RegressionHead_plus(nn.Module):
+    def __init__(self, lossID, weights=None):
+        super(RegressionHead_plus, self).__init__()
+        if lossID != "loss3":
+            nc = {"loss1": 512, "loss2": 528}
+            self.projection = nn.Sequential(*[nn.AvgPool2d(kernel_size=5, stride=3),
+                                              weight_init_googlenet(lossID+"/conv", nn.Conv2d(nc[lossID], 128, kernel_size=1), weights),
+                                              nn.ReLU(inplace=True)])
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
+                                               nn.ReLU(inplace=True)])
+            self.cls_fc_pose2 = nn.Sequential(*[weight_init_googlenet(lossID+"/fc2", nn.Linear(1024, 512), weights),
+                                               nn.ReLU(inplace=True),
+                                               nn.Dropout(0.7)])
+
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(512, 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(512, 4))
+        else:
+            self.projection = nn.AvgPool2d(kernel_size=7, stride=1)
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet("pose", nn.Linear(1024, 2048)),
+                                               nn.ReLU(inplace=True)])
+            self.cls_fc_pose2 = nn.Sequential(*[weight_init_googlenet("pose2", nn.Linear(2048, 1024)),
+                                               nn.ReLU(inplace=True),
+                                               nn.Dropout(0.5)])
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(1024, 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(1024, 4))
+
+    def forward(self, input):
+        output = self.projection(input)
+        output = self.cls_fc_pose(output.view(output.size(0), -1))
+        output_xy = self.cls_fc_xy(output)
+        output_wpqr = self.cls_fc_wpqr(output)
+        output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
         return [output_xy, output_wpqr]
 
 
@@ -110,12 +162,10 @@ class RegressionHeadLSTM(nn.Module):
             self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
                                                nn.ReLU(inplace=True)])
 
-
             self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(hidden_size*4, 3))
             self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(hidden_size*4, 4))
             self.lstm_pose_lr = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True)
             self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True)
-
             self.dropout_lstm = nn.Dropout(p=0.7)
             print("call lr")
             weights_init_kaiming(self.lstm_pose_lr)
@@ -150,9 +200,6 @@ class RegressionHeadLSTM(nn.Module):
         output_xy = self.cls_fc_xy(final_output_lstm)
         output_wpqr = self.cls_fc_wpqr(final_output_lstm)
         output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
-        #logging.warning('OUTPUT:')
-        #logging.warning(output_xy)
-        #logging.warning(output_wpqr)
         return [output_xy, output_wpqr]
 
 
@@ -199,7 +246,7 @@ class InceptionBlock(nn.Module):
         return output
 
 class PoseNet(nn.Module):
-    def __init__(self, input_nc, weights=None, isTest=False,  gpu_ids=[]):
+    def __init__(self, input_nc, weights=None, isTest=False, lstm_size=0, gpu_ids=[]):
         super(PoseNet, self).__init__()
         self.gpu_ids = gpu_ids
         self.isTest = isTest
@@ -226,16 +273,15 @@ class PoseNet(nn.Module):
         self.inception_5a = InceptionBlock("5a", 832, 256, 160, 320, 32, 128, 128, weights, gpu_ids)
         self.inception_5b = InceptionBlock("5b", 832, 384, 192, 384, 48, 128, 128, weights, gpu_ids)
 
-        lstm = True
-
-        if lstm:
-            self.cls1_fc = RegressionHeadLSTM(lossID="loss1", weights=weights,hidden_size=32)
-            self.cls2_fc = RegressionHeadLSTM(lossID="loss2", weights=weights,hidden_size=32)
-            self.cls3_fc = RegressionHeadLSTM(lossID="loss3", weights=weights,hidden_size=32)
-        else:
+        if lstm_size==0:
             self.cls1_fc = RegressionHead(lossID="loss1", weights=weights)
             self.cls2_fc = RegressionHead(lossID="loss2", weights=weights)
             self.cls3_fc = RegressionHead(lossID="loss3", weights=weights)
+
+        else:
+            self.cls1_fc = RegressionHeadLSTM(lossID="loss1", weights=weights, hidden_size=lstm_size)
+            self.cls2_fc = RegressionHeadLSTM(lossID="loss2", weights=weights, hidden_size=lstm_size)
+            self.cls3_fc = RegressionHeadLSTM(lossID="loss3", weights=weights, hidden_size=lstm_size)
 
         self.model = nn.Sequential(*[self.inception_3a, self.inception_3b,
                                    self.inception_4a, self.inception_4b,

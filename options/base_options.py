@@ -32,6 +32,7 @@ class BaseOptions():
         self.parser.add_argument('--resize_or_crop', type=str, default='scale_width_and_crop', help='scaling and cropping of images at load time [resize_and_crop|crop|scale_width|scale_width_and_crop]')
         self.parser.add_argument('--no_flip', action='store_true', default=True, help='if specified, do not flip the images for data augmentation')
         self.parser.add_argument('--seed', type=int, default=0, help='initial random seed for deterministic results')
+        self.parser.add_argument('--lstm_size', type=int, default=0, help='LSTM hidden size, zero means no LSTM is used for the regression head')
 
         self.initialized = True
 
