@@ -9,4 +9,6 @@ class TestOptions(BaseOptions):
         self.parser.add_argument('--aspect_ratio', type=float, default=1.0, help='aspect ratio of result images')
         self.parser.add_argument('--phase', type=str, default='test', help='train, val, test, etc')
         self.parser.add_argument('--which_epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
+        self.parser.add_argument('--start_epoch', type=int, default=150, help='start epoch number')
+        self.parser.add_argument('--end_epoch', type=int, default=500, help='end epoch number')
         self.isTrain = False

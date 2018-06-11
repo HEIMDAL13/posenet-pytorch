@@ -28,7 +28,7 @@ if not os.path.exists(results_dir):
 
 testepochs = ['latest']
 besterror  = [0, float('inf'), float('inf')] # nepoch, medX, medQ
-testepochs = numpy.arange(150, 601, 5)
+testepochs = numpy.arange(opt.start_epoch, opt.end_epoch, 5)
 testfile = open(os.path.join(results_dir, 'test_median.txt'), 'a')
 testfile.write('epoch medX  medQ\n')
 testfile.write('==================\n')
