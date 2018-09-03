@@ -45,6 +45,26 @@ def weights_init_kaiming(m):
                 nn.init.kaiming_normal_(param)
                 #nn.init.xavier_normal_(param)
 
+def weights_init_xavier(m):
+    classname = m.__class__.__name__
+    print(classname)
+    if classname.find('Conv') != -1:
+        init.kaiming_normal(m.weight.data, a=0, mode='fan_in')
+    elif classname.find('Linear') != -1:
+        init.kaiming_normal(m.weight.data, a=0, mode='fan_in')
+    elif classname.find('BatchNorm2d') != -1:
+        init.normal_(m.weight.data, 1.0, 0.02)
+        init.constant_(m.bias.data, 0.0)
+    elif classname.find('LSTM') != -1:
+        for name, param in m.named_parameters():
+            if 'bias' in name:
+                print(name)
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                print(name)
+                nn.init.xavier_normal_(param)
+
+
 
 def get_scheduler(optimizer, opt):
     if opt.lr_policy == 'lambda':
@@ -124,20 +144,20 @@ class RegressionHead_plus(nn.Module):
                                               nn.ReLU(inplace=True)])
             self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
                                                nn.ReLU(inplace=True)])
-            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(512, 3))
-            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(512, 4))
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(1024, 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(1024, 4))
             weights = None
-            self.cls_fc_pose2 = nn.Sequential(*[weight_init_googlenet(lossID+"/fc2", nn.Linear(1024, 512), weights),
+            self.cls_fc_pose2 = nn.Sequential(*[weight_init_googlenet(lossID+"/fc2", nn.Linear(1024, 1024), weights),
                                                nn.ReLU(inplace=True),
                                                nn.Dropout(0.7)])
         else:
             self.projection = nn.AvgPool2d(kernel_size=7, stride=1)
             self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet("pose", nn.Linear(1024, 2048)),
                                                nn.ReLU(inplace=True)])
-            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(1024, 3))
-            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(1024, 4))
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(2048, 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(2048, 4))
             weights = None
-            self.cls_fc_pose2 = nn.Sequential(*[weight_init_googlenet("pose2", nn.Linear(2048, 1024)),
+            self.cls_fc_pose2 = nn.Sequential(*[weight_init_googlenet("pose2", nn.Linear(2048, 2048)),
                                                 nn.ReLU(inplace=True),
                                                 nn.Dropout(0.5)])
 
@@ -149,6 +169,76 @@ class RegressionHead_plus(nn.Module):
         output_wpqr = self.cls_fc_wpqr(output)
         output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
         return [output_xy, output_wpqr]
+
+
+class FourDirectionalLSTM(nn.Module):
+    def __init__(self, seq_size, origin_feat_size, hidden_size):
+        super(FourDirectionalLSTM, self).__init__()
+        self.feat_size = origin_feat_size // seq_size
+        self.seq_size = seq_size
+        self.hidden_size = hidden_size
+        self.lstm_rightleft = nn.LSTM(self.feat_size, self.hidden_size, batch_first=True, bidirectional=True)
+        self.lstm_downup = nn.LSTM(self.seq_size, self.hidden_size, batch_first=True, bidirectional=True)
+
+    def init_hidden_(self, batch_size, device):
+        '''Return initialized hidden states and cell states for each biodirectional lstm cell'''
+        return (torch.randn(2, batch_size, self.hidden_size).to(device),
+                torch.randn(2, batch_size, self.hidden_size).to(device))
+
+    def forward(self, x):
+        batch_size = x.size()[0]
+        x_rightleft = x.view(batch_size, self.seq_size, self.feat_size)
+        x_downup = x_rightleft.transpose(1, 2)
+        hidden_rightleft = self.init_hidden_(batch_size, x.device)
+        hidden_downup = self.init_hidden_(batch_size, x.device)
+        out_rightleft, hidden_rightleft = self.lstm_rightleft(x_rightleft, hidden_rightleft)
+        out_downup, hidden_downup = self.lstm_downup(x_downup, hidden_downup)
+        hlr_fw = hidden_rightleft[0][0]
+        hlr_bw = hidden_rightleft[0][1]
+        hud_fw = hidden_downup[0][0]
+        hud_bw = hidden_downup[0][1]
+        concated = torch.cat([hlr_fw, hlr_bw, hud_fw, hud_bw], dim=1)
+        return concated
+
+
+class RegressionHeadLSTM2(nn.Module):
+    def __init__(self, lossID, weights=None, hidden_size=32):
+        super(RegressionHeadLSTM2, self).__init__()
+        if lossID != "loss3":
+            nc = {"loss1": 512, "loss2": 528}
+            self.projection = nn.Sequential(*[nn.AvgPool2d(kernel_size=5, stride=3),
+                                              weight_init_googlenet(lossID+"/conv", nn.Conv2d(nc[lossID], 128, kernel_size=1), weights),
+                                              nn.ReLU(inplace=True)])
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
+                                               nn.ReLU(inplace=True)])
+            self.lstm4dir = FourDirectionalLSTM(seq_size=32, origin_feat_size=1024, hidden_size=256)
+            self.regress_lstm4d = nn.Sequential(self.lstm4dir, nn.Dropout(0.7))
+
+            self.regress_fc_xyz = nn.Linear(1024, 3)
+            self.regress_fc_wpqr = nn.Linear(1024, 4)
+
+
+
+        else:
+            self.projection = nn.AvgPool2d(kernel_size=7, stride=1)
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet("pose", nn.Linear(1024, 2048)),
+                                               nn.ReLU(inplace=True)])
+            self.lstm4dir = FourDirectionalLSTM(seq_size=32, origin_feat_size=2048, hidden_size=256)
+            self.regress_lstm4d = nn.Sequential(self.lstm4dir, nn.Dropout(0.5))
+            self.regress_fc_xyz = nn.Linear(1024, 3)
+            self.regress_fc_wpqr = nn.Linear(1024, 4)
+
+
+    def forward(self, input):
+        x = self.projection(input)
+        x = self.cls_fc_pose(x.view(x.size(0), -1))
+        x = self.regress_lstm4d(x)
+        xyz = self.regress_fc_xyz(x)
+        wpqr = self.regress_fc_wpqr(x)
+        wpqr = F.normalize(wpqr, p=2, dim=1)
+        return [xyz, wpqr]
+
+
 
 
 
@@ -257,7 +347,7 @@ class PoseNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
             nn.LocalResponseNorm(size=5, alpha=0.0001, beta=0.75, k=1),
-            weight_init_googlenet("conv2/3x3_reduce", nn.Conv2d(64, 64, kernel_size=1)),
+            weight_init_googlenet("conv2/3x3_reduce", nn.Conv2d(64, 64, kernel_size=1), weights),
             nn.ReLU(inplace=True),
             weight_init_googlenet("conv2/3x3", nn.Conv2d(64, 192, kernel_size=3, padding=1), weights),
             nn.ReLU(inplace=True),
@@ -276,14 +366,14 @@ class PoseNet(nn.Module):
         self.inception_5b = InceptionBlock("5b", 832, 384, 192, 384, 48, 128, 128, weights, gpu_ids)
 
         if lstm_size==0:
-            self.cls1_fc = RegressionHead(lossID="loss1", weights=weights)
-            self.cls2_fc = RegressionHead(lossID="loss2", weights=weights)
-            self.cls3_fc = RegressionHead(lossID="loss3", weights=weights)
+            self.cls1_fc = RegressionHead_plus(lossID="loss1", weights=weights)
+            self.cls2_fc = RegressionHead_plus(lossID="loss2", weights=weights)
+            self.cls3_fc = RegressionHead_plus(lossID="loss3", weights=weights)
 
         else:
-            self.cls1_fc = RegressionHeadLSTM(lossID="loss1", weights=weights, hidden_size=lstm_size)
-            self.cls2_fc = RegressionHeadLSTM(lossID="loss2", weights=weights, hidden_size=lstm_size)
-            self.cls3_fc = RegressionHeadLSTM(lossID="loss3", weights=weights, hidden_size=lstm_size)
+            self.cls1_fc = RegressionHeadLSTM_batchfirst(lossID="loss1", weights=weights, hidden_size=lstm_size)
+            self.cls2_fc = RegressionHeadLSTM_batchfirst(lossID="loss2", weights=weights, hidden_size=lstm_size)
+            self.cls3_fc = RegressionHeadLSTM_batchfirst(lossID="loss3", weights=weights, hidden_size=lstm_size)
 
         self.model = nn.Sequential(*[self.inception_3a, self.inception_3b,
                                    self.inception_4a, self.inception_4b,
@@ -310,3 +400,57 @@ class PoseNet(nn.Module):
         if not self.isTest:
             return self.cls1_fc(output_4a) + self.cls2_fc(output_4d) +  self.cls3_fc(output_5b)
         return self.cls3_fc(output_5b)
+
+
+
+class RegressionHeadLSTM_batchfirst(nn.Module):
+    def __init__(self, lossID, weights=None,hidden_size=256):
+        super(RegressionHeadLSTM_batchfirst, self).__init__()
+        print("LSTM CANNER VERSION CREATED")
+        if lossID != "loss3":
+            nc = {"loss1": 512, "loss2": 528}
+            self.projection = nn.Sequential(*[nn.AvgPool2d(kernel_size=5, stride=3),
+                                              weight_init_googlenet(lossID+"/conv", nn.Conv2d(nc[lossID], 128, kernel_size=1), weights),
+                                              nn.ReLU(inplace=True)])
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
+                                               nn.ReLU(inplace=True)])
+
+            self.cls_fc_xy_b = weight_init_googlenet("XYZ", nn.Linear(hidden_size*4, 3))
+            self.cls_fc_wpqr_b = weight_init_googlenet("WPQR", nn.Linear(hidden_size*4, 4))
+            self.lstm_pose_lr = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True, batch_first=True)
+            self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True, batch_first=True)
+            self.dropout_lstm = nn.Dropout(p=0.7)
+            print("call lr")
+            weights_init_xavier(self.lstm_pose_lr)
+            print("call ud")
+            weights_init_xavier(self.lstm_pose_ud)
+
+        else:
+            self.projection = nn.AvgPool2d(kernel_size=7, stride=1)
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet("pose", nn.Linear(1024, 2048)),
+                                               nn.ReLU(inplace=True)])
+
+            self.cls_fc_xy_b = weight_init_googlenet("XYZ", nn.Linear(hidden_size*4, 3))
+            self.cls_fc_wpqr_b = weight_init_googlenet("WPQR", nn.Linear(hidden_size*4, 4))
+
+            self.lstm_pose_lr = nn.LSTM(input_size=64, hidden_size=hidden_size, bidirectional=True, batch_first=True)
+            self.lstm_pose_ud = nn.LSTM(input_size=32, hidden_size=hidden_size, bidirectional=True, batch_first=True)
+
+            self.dropout_lstm = nn.Dropout(p=0.5)
+            print("call lr end")
+            weights_init_xavier(self.lstm_pose_lr)
+            print("call ud end")
+            weights_init_xavier(self.lstm_pose_ud)
+
+    def forward(self, input):
+        output = self.projection(input)
+        output = self.cls_fc_pose(output.view(output.size(0), -1))
+        input_lstm = output.view(output.size(0),32, -1)
+        outputlr, (hidden_state_lr, cell_state_lr) = self.lstm_pose_lr(input_lstm.permute(0,1,2))
+        outputud, (hidden_state_ud, cell_state_ud) = self.lstm_pose_ud(input_lstm.permute(0,2,1))
+        final_output_lstm = torch.cat((hidden_state_lr[0,:,:], hidden_state_lr[1,:,:], hidden_state_ud[0,:,:],hidden_state_ud[1,:,:]), 1)
+        final_output_lstm = self.dropout_lstm(final_output_lstm)
+        output_xy = self.cls_fc_xy_b(final_output_lstm)
+        output_wpqr = self.cls_fc_wpqr_b(final_output_lstm)
+        output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+        return [output_xy, output_wpqr]
