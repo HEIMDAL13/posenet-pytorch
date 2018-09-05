@@ -28,15 +28,6 @@ total_steps = 0
 pytorch_total_params = sum(p.numel() for p in model.netG.parameters())
 print("Total parameters: ",pytorch_total_params)
 
-
-
-file = open("parameters", "w")
-for m_name, module in model.netG.named_modules():
-    file.write("MODULE NAME: " + m_name)
-    for p_name, p in module.named_parameters():
-        file.write("parameter name: " + p_name)
-        file.write(str(p))
-
 for epoch in range(opt.epoch_count, opt.niter + opt.niter_decay + 1):
     epoch_start_time = time.time()
     epoch_iter = 0
